@@ -16,11 +16,14 @@ import java.util.concurrent.TimeUnit
 import scala.concurrent.Await
 import scala.concurrent.duration.Duration
 
+import scala.util.{Failure, Success}
+import scala.concurrent.{Await, Future}
+import scala.concurrent.ExecutionContext.Implicits.global
 
 object WordCounterApp extends App {
   val VERSION: String = "0.0.1"
-  val sourceDirectory: String = "/Users/rrajesh1979/Documents/Learn/gitrepo/word-count/java-wc-thread/src/main/resources/stagefiles"
-  val NUM_PERSISTORS = 200
+  val sourceDirectory: String = "/Users/rrajesh1979/Documents/Learn/gitrepo/word-count/java-wc-thread/src/main/resources/prodfiles"
+  val NUM_PERSISTORS = 5
 
   //STEP 0: get list of files from source directory
   def getListOfFiles(dir: String) : List[File] = {
@@ -36,13 +39,19 @@ object WordCounterApp extends App {
 
   val wordCountActorSystem = ActorSystem("WordCountActorSystem")
 
+  // Use a Connection String
+  val mongoClient: MongoClient = MongoClient("mongodb://localhost:27017")
+  val database: MongoDatabase = mongoClient.getDatabase("wordcountdb")
+  val collection: MongoCollection[Document] = database.getCollection("lines")
+
+  val aggregator = wordCountActorSystem.actorOf(Props[Aggregator], "aggregator")
+    val persistor = wordCountActorSystem.actorOf(Props[ParentPersistor], "persistor")
+//  val persistor = wordCountActorSystem.actorOf(Props[PersistLines], "persistor")
+
   import WCMessages._
   fileList.foreach(file =>
     wordCountActorSystem.actorOf(Props(new FileReader(file)), "fileReader" + fileList.indexOf(file)) ! ReadFile
   )
-
-  val aggregator = wordCountActorSystem.actorOf(Props[Aggregator], "aggregator")
-  val persistor = wordCountActorSystem.actorOf(Props[ParentPersistor], "persistor")
 
   //STEP 1: FileReadActor - create one actor to process each file.
   //FileReadActor - reads each file and sends each line to a new WordCount actor.
@@ -56,11 +65,6 @@ object WordCounterApp extends App {
   }
   class FileReader(val file: File) extends Actor with ActorLogging {
     import WCMessages._
-    // Use a Connection String
-    val mongoClient: MongoClient = MongoClient("mongodb://localhost:27017")
-    val database: MongoDatabase = mongoClient.getDatabase("wordcountdb")
-    val collection: MongoCollection[Document] = database.getCollection("lines")
-
     override def receive: Receive = {
       case ReadFile =>
         log.info("Inside ReadFile for file :: {}", file)
@@ -119,7 +123,12 @@ object WordCounterApp extends App {
       case InsertLine(collection: MongoCollection[Document], file: String, line: String) =>
 //        log.info("Persisting line :: {} :: in file :: {}", line, file)
         val doc: Document = Document("_id" -> new ObjectId, "file" -> file, "line" -> line)
-        collection.insertOne(doc).results() //TODO: asynchronous call
+//        collection.insertOne(doc).results() //TODO: asynchronous call
+//        Thread.sleep(1)
+        collection.insertOne(doc).results().onComplete {
+          case Success(_) => //log.info("Persisted line :: {} :: in file :: {}", line, file)
+          case Failure(e) => //log.error("Failed to persist line :: {} with error :: {}", line, e.printStackTrace())
+        }
         //self ! Shutdown ???
     }
   }
@@ -165,15 +174,21 @@ object WordCounterApp extends App {
 
     trait ImplicitObservable[C] {
       val observable: Observable[C]
-      val converter: (C) => String
+      val converter: C => String
 
-      def results(): Seq[C] = Await.result(observable.toFuture(), Duration(10, TimeUnit.SECONDS))
-      def headResult() = Await.result(observable.head(), Duration(10, TimeUnit.SECONDS))
       def printResults(initial: String = ""): Unit = {
-        if (initial.length > 0) print(initial)
-        results().foreach(res => println(converter(res)))
+        if (initial.nonEmpty) print(initial)
+        results().onComplete {
+          case Success(responses) => responses.foreach(res => println(converter(res)))
+          case Failure(exception) => println(exception.getMessage)
+        }
       }
-      def printHeadResult(initial: String = ""): Unit = println(s"${initial}${converter(headResult())}")
+
+      def results(): Future[Seq[C]] = observable.toFuture()
+
+      def printHeadResult(initial: String = ""): Unit = println(s"$initial${converter(headResult())}")
+
+      def headResult(): C = Await.result(observable.head(), Duration(10, TimeUnit.SECONDS))
     }
 
   }
