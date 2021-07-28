@@ -23,6 +23,4 @@ libraryDependencies ++= Seq(
     // https://mvnrepository.com/artifact/org.slf4j/slf4j-simple
   "org.slf4j" % "slf4j-simple" % "1.7.32",
 
-
-
 )

@@ -1,6 +1,8 @@
 package akkabasics
 
-import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
+import akka.actor.FSM.Shutdown
+import akka.actor.{Actor, ActorLogging, ActorSystem, Props, Terminated}
+import akka.routing.{ActorRefRoutee, RoundRobinRoutingLogic, Router}
 import org.bson.types.ObjectId
 
 import java.io.File
@@ -18,6 +20,7 @@ import scala.concurrent.duration.Duration
 object WordCounterApp extends App {
   val VERSION: String = "0.0.1"
   val sourceDirectory: String = "/Users/rrajesh1979/Documents/Learn/gitrepo/word-count/java-wc-thread/src/main/resources/stagefiles"
+  val NUM_PERSISTORS = 200
 
   //STEP 0: get list of files from source directory
   def getListOfFiles(dir: String) : List[File] = {
@@ -39,7 +42,7 @@ object WordCounterApp extends App {
   )
 
   val aggregator = wordCountActorSystem.actorOf(Props[Aggregator], "aggregator")
-  val persistor = wordCountActorSystem.actorOf(Props[PersistLines], "persistor")
+  val persistor = wordCountActorSystem.actorOf(Props[ParentPersistor], "persistor")
 
   //STEP 1: FileReadActor - create one actor to process each file.
   //FileReadActor - reads each file and sends each line to a new WordCount actor.
@@ -64,6 +67,7 @@ object WordCounterApp extends App {
         val sourceFile = Source.fromFile(file)
         for (line <- sourceFile.getLines()) {
           context.actorOf(Props(new WordCounter(collection, file, line)), "wordCounter" + randomUUID().toString) ! CountWords
+          persistor ! InsertLine(collection, file.toString, line)
         }
         sourceFile.close()
     }
@@ -77,7 +81,9 @@ object WordCounterApp extends App {
       case CountWords =>
 //        log.info("Number of words in line :: {} :: is {}",line, line.split(" ").length)
         aggregator ! new AggregateWords(file.toString, line.split(" ").length)
-        context.actorOf(Props[PersistLines], "wordCounter" + randomUUID().toString) ! InsertLine(collection, file.toString, line)
+//        context.actorOf(Props[PersistLines], "wordCounter" + randomUUID().toString) ! InsertLine(collection, file.toString, line)
+        //TODO: do we create a new actor each time or just have one actor instance doing the work
+        //TODO: check how the connection pool for mongo is manged. Should not create multiple connections.
 
     }
   }
@@ -113,8 +119,34 @@ object WordCounterApp extends App {
       case InsertLine(collection: MongoCollection[Document], file: String, line: String) =>
 //        log.info("Persisting line :: {} :: in file :: {}", line, file)
         val doc: Document = Document("_id" -> new ObjectId, "file" -> file, "line" -> line)
-        collection.insertOne(doc).results()
+        collection.insertOne(doc).results() //TODO: asynchronous call
+        //self ! Shutdown ???
     }
+  }
+
+  class ParentPersistor extends Actor with ActorLogging {
+    import WCMessages._
+    import Helpers._
+
+    var router: Router = {
+      val routees = Vector.fill(NUM_PERSISTORS) {
+        val r = context.actorOf(Props[PersistLines]())
+        context.watch(r)
+        ActorRefRoutee(r)
+      }
+      Router(RoundRobinRoutingLogic(), routees)
+    }
+
+    def receive: Receive = {
+      case w: InsertLine =>
+        router.route(w, sender())
+      case Terminated(a) =>
+        router = router.removeRoutee(a)
+        val r = context.actorOf(Props[ParentPersistor]())
+        context.watch(r)
+        router = router.addRoutee(r)
+    }
+
   }
 
 //  fileList.foreach(file =>
