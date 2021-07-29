@@ -23,7 +23,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 object WordCounterApp extends App {
   val VERSION: String = "0.0.1"
   val sourceDirectory: String = "/Users/rrajesh1979/Documents/Learn/gitrepo/word-count/java-wc-thread/src/main/resources/prodfiles"
-  val NUM_PERSISTORS = 5
+  val NUM_PERSISTORS = 10
 
   //STEP 0: get list of files from source directory
   def getListOfFiles(dir: String) : List[File] = {
@@ -70,7 +70,7 @@ object WordCounterApp extends App {
         log.info("Inside ReadFile for file :: {}", file)
         val sourceFile = Source.fromFile(file)
         for (line <- sourceFile.getLines()) {
-          context.actorOf(Props(new WordCounter(collection, file, line)), "wordCounter" + randomUUID().toString) ! CountWords
+          context.actorOf(Props(new WordCounter(file, line)), "wordCounter" + randomUUID().toString) ! CountWords
           persistor ! InsertLine(collection, file.toString, line)
         }
         sourceFile.close()
@@ -78,7 +78,7 @@ object WordCounterApp extends App {
   }
 
   //STEP 2: Word Count Actor - counts words and sends to AggregatorActor
-  class WordCounter(val collection: MongoCollection[Document], val file: File, val line: String) extends Actor with ActorLogging {
+  class WordCounter(val file: File, val line: String) extends Actor with ActorLogging {
     import WCMessages._
 
     override def receive: Receive = {
@@ -129,7 +129,6 @@ object WordCounterApp extends App {
           case Success(_) => //log.info("Persisted line :: {} :: in file :: {}", line, file)
           case Failure(e) => //log.error("Failed to persist line :: {} with error :: {}", line, e.printStackTrace())
         }
-        //self ! Shutdown ???
     }
   }
 
